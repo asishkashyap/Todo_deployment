@@ -1,92 +1,105 @@
+# azure-pipelines.yaml
+
 trigger:
 - main
 
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  dockerRegistryServiceConnection: '<your-docker-registry-service-connection>'
+  aksServiceConnection: '<your-aks-service-connection>'
+  imageNamePrefix: 'your-docker-image-prefix'  # E.g., 'yourdockerhubusername/todo'
+  sonarQubeServiceConnection: '<your-sonarqube-service-connection>'
+  sonarProjectKey: '<your-sonarqube-project-key>'
+
 stages:
-- stage: SonarQubeAnalysis
-  displayName: 'SonarQube Analysis'
+- stage: Build
+  displayName: Build Docker Images
   jobs:
-  - job: SonarQube
+  - job: Build
+    displayName: Build
     steps:
-    - task: SonarQubePrepare@5
+    - task: Checkout@2
+      displayName: Checkout code
+
+    - task: SonarQubePrepare@4
       inputs:
-        SonarQube: 'SonarQube'
+        SonarQube: '$(sonarQubeServiceConnection)'
         scannerMode: 'CLI'
         configMode: 'manual'
-        cliProjectKey: 'get-tasks'
-        cliSources: 'GetTasks'
-    - task: SonarQubeAnalyze@5
-    - task: SonarQubePublish@5
+        cliProjectKey: '$(sonarProjectKey)'
+        cliSources: '.'
+
+    - task: SonarQubeAnalyze@4
+
+    - task: SonarQubePublish@4
       inputs:
         pollingTimeoutSec: '300'
 
-
-
-- stage: DockerBuild
-  displayName: 'Docker Build'
-  jobs:
-  - job: Build
-    pool:
-      vmImage: 'ubuntu-latest'
-    steps:
     - task: Docker@2
-      displayName: 'Build an image'
+      displayName: Build and Push get-tasks Docker image
       inputs:
-        repository: 'your-repository'
-        command: 'build'
-        Dockerfile: '/Dockerfile'
+        command: buildAndPush
+        dockerfile: 'get-tasks/Dockerfile'
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+        imageName: '$(imageNamePrefix)-get-tasks'
         tags: |
-          latest
+          $(Build.BuildId)
 
-- stage: DockerPush
-  displayName: 'Docker Push to ACR'
-  dependsOn: TrivyScan
-  jobs:
-  - job: Push
-    pool:
-      vmImage: 'ubuntu-latest'
-    steps:
-    - task: AzureCLI@2
+    - task: Docker@2
+      displayName: Build and Push add-task Docker image
       inputs:
-        azureSubscription: 'your-azure-subscription'
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          az acr login --name yourACR
-          docker tag your-repository:latest yourACR.azurecr.io/your-repository:latest
-          docker push yourACR.azurecr.io/your-repository:latest
+        command: buildAndPush
+        dockerfile: 'add-task/Dockerfile'
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+        imageName: '$(imageNamePrefix)-add-task'
+        tags: |
+          $(Build.BuildId)
+
+    - task: Docker@2
+      displayName: Build and Push delete-task Docker image
+      inputs:
+        command: buildAndPush
+        dockerfile: 'delete-task/Dockerfile'
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+        imageName: '$(imageNamePrefix)-delete-task'
+        tags: |
+          $(Build.BuildId)
+
+    - task: Docker@2
+      displayName: Build and Push frontend-ui Docker image
+      inputs:
+        command: buildAndPush
+        dockerfile: 'frontend-ui/Dockerfile'
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+        imageName: '$(imageNamePrefix)-frontend-ui'
+        tags: |
+          $(Build.BuildId)
 
 - stage: Deploy
-  displayName: 'Deploy on AKS'
-  dependsOn: DockerPush
+  displayName: Deploy to AKS
   jobs:
-  - deployment: DeployAKS
-    environment: 'aks-environment'
-    pool:
-      vmImage: 'ubuntu-latest'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmInstaller@1
-            inputs:
-              helmVersionToInstall: 'latest'
-          - task: AzureCLI@2
-            inputs:
-              azureSubscription: 'your-azure-subscription'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                az aks get-credentials --resource-group yourResourceGroup --name yourAKSCluster
-                helm upgrade --install yourReleaseName ./helm-chart-directory --set image.repository=yourACR.azurecr.io/your-repository --set image.tag=latest
-
-- stage: KeyVault
-  displayName: 'Manage Secrets'
-  jobs:
-  - job: KeyVault
+  - job: Deploy
+    displayName: Deploy
     steps:
-    - task: AzureKeyVault@1
+    - task: Kubernetes@1
+      displayName: Create secret for ACR authentication
       inputs:
-        azureSubscription: 'your-azure-subscription'
-        KeyVaultName: 'your-keyvault-name'
-        SecretsFilter: '*'
-        RunAsPreJob: false
+        kubernetesServiceConnection: '$(aksServiceConnection)'
+        namespace: 'default'
+        command: 'createSecret'
+        secretName: 'acr-auth'
+        dockerRegistryEndpoint: '$(dockerRegistryServiceConnection)'
+
+    - task: Kubernetes@1
+      displayName: Deploy microservices
+      inputs:
+        kubernetesServiceConnection: '$(aksServiceConnection)'
+        namespace: 'default'
+        command: 'apply'
+        useConfigurationFile: true
+        configurationType: 'multi'
+        configuration: |
+          $(Pipeline.Workspace)/manifests/*/*.yaml
+        secretName: 'acr-auth'
