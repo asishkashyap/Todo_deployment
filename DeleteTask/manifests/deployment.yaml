@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: delete-deploy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: delete 
+  template:
+    metadata:
+      labels:
+        app: delete
+    spec:
+      containers:
+      - name: deletect
+        image: devopsinsiders/micro-deletetask
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: secrets-store-inline
+          mountPath: /mnt/cs-kv
+          readOnly: true
+      volumes:
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: azure-kvname-system-mi

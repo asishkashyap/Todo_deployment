@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: get-deploy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: get
+  template:
+    metadata:
+      labels:
+        app: get
+    spec:
+      containers:
+      - name: getct
+        image: devopsinsiders/micro-gettasks
+        ports:
+        - containerPort: 8000
+        volumeMounts:
+        - name: secrets-store-inline
+          mountPath: /mnt/cs-kv
+          readOnly: true
+      volumes:
+      - name: secrets-store-inline
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: azure-kvname-system-mi
