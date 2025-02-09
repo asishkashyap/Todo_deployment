@@ -1,0 +1,92 @@
+trigger:
+- main
+
+stages:
+- stage: SonarQubeAnalysis
+  displayName: 'SonarQube Analysis'
+  jobs:
+  - job: SonarQube
+    steps:
+    - task: SonarQubePrepare@5
+      inputs:
+        SonarQube: 'SonarQube'
+        scannerMode: 'CLI'
+        configMode: 'manual'
+        cliProjectKey: 'get-tasks'
+        cliSources: 'GetTasks'
+    - task: SonarQubeAnalyze@5
+    - task: SonarQubePublish@5
+      inputs:
+        pollingTimeoutSec: '300'
+
+
+
+- stage: DockerBuild
+  displayName: 'Docker Build'
+  jobs:
+  - job: Build
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: Docker@2
+      displayName: 'Build an image'
+      inputs:
+        repository: 'your-repository'
+        command: 'build'
+        Dockerfile: '/Dockerfile'
+        tags: |
+          latest
+
+- stage: DockerPush
+  displayName: 'Docker Push to ACR'
+  dependsOn: TrivyScan
+  jobs:
+  - job: Push
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: 'your-azure-subscription'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          az acr login --name yourACR
+          docker tag your-repository:latest yourACR.azurecr.io/your-repository:latest
+          docker push yourACR.azurecr.io/your-repository:latest
+
+- stage: Deploy
+  displayName: 'Deploy on AKS'
+  dependsOn: DockerPush
+  jobs:
+  - deployment: DeployAKS
+    environment: 'aks-environment'
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmInstaller@1
+            inputs:
+              helmVersionToInstall: 'latest'
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: 'your-azure-subscription'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials --resource-group yourResourceGroup --name yourAKSCluster
+                helm upgrade --install yourReleaseName ./helm-chart-directory --set image.repository=yourACR.azurecr.io/your-repository --set image.tag=latest
+
+- stage: KeyVault
+  displayName: 'Manage Secrets'
+  jobs:
+  - job: KeyVault
+    steps:
+    - task: AzureKeyVault@1
+      inputs:
+        azureSubscription: 'your-azure-subscription'
+        KeyVaultName: 'your-keyvault-name'
+        SecretsFilter: '*'
+        RunAsPreJob: false
